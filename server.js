@@ -5,261 +5,70 @@ const geoip = require("geoip-lite");
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-app.use(express.json());
+// Función: fecha/hora ISO 8601 real según timezone
+function getISODateTime(timezone) {
+  const now = new Date();
 
-function getLocalDateTimeIn(timezone) {
-  try {
-    const formatter = new Intl.DateTimeFormat("es-ES", {
-      timeZone: timezone,
-      year: "numeric",
-      month: "2-digit",
-      day: "2-digit",
-      hour: "2-digit",
-      minute: "2-digit",
-      second: "2-digit",
-    });
-    return formatter.format(new Date());
-  } catch (e) {
-    console.error("Error formateando fecha/hora:", e);
-    return null;
-  }
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: timezone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  }).formatToParts(now);
+
+  const year = parts.find(p => p.type === "year").value;
+  const month = parts.find(p => p.type === "month").value;
+  const day = parts.find(p => p.type === "day").value;
+  const hour = parts.find(p => p.type === "hour").value;
+  const minute = parts.find(p => p.type === "minute").value;
+  const second = parts.find(p => p.type === "second").value;
+
+  const offsetParts = new Intl.DateTimeFormat("en-US", {
+    timeZone: timezone,
+    timeZoneName: "shortOffset",
+  }).formatToParts(now);
+
+  const offset = offsetParts.find(p => p.type === "timeZoneName").value;
+
+  return `${year}-${month}-${day}T${hour}:${minute}:${second}${offset}`;
 }
 
-// API: devuelve info basada en IP usando geoip-lite
+// Ruta API única
 app.get("/api/location", (req, res) => {
-  const ipHeader = req.headers["x-forwarded-for"];
   let ip =
-    (ipHeader && ipHeader.split(",")[0].trim()) ||
-    req.socket.remoteAddress ||
-    "";
+    (req.headers["x-forwarded-for"] &&
+      req.headers["x-forwarded-for"].split(",")[0].trim()) ||
+    req.socket.remoteAddress;
 
-  // En local normalmente es ::1 (IPv6 loopback) y geoip-lite no tiene datos.
-  // Para pruebas, ponemos una IP fija si es ::1 o 127.0.0.1
+  // En localhost cambiará ::1 por una IP pública de ejemplo para pruebas
   if (ip === "::1" || ip === "127.0.0.1") {
-    ip = "8.8.8.8"; // solo para ver que funciona en desarrollo
+    ip = "8.8.8.8";
   }
 
   const geo = geoip.lookup(ip);
 
   if (!geo) {
-    console.log("Sin datos para IP:", ip);
     return res.status(500).json({ error: "no_geo_data", ip });
   }
 
   const timezone = geo.timezone;
-  const localDateTime = timezone ? getLocalDateTimeIn(timezone) : null;
+  const isoDateTime = timezone ? getISODateTime(timezone) : null;
 
   res.json({
     ip,
-    country: geo.country,   // código ISO (ej: "PE")
-    region: geo.region,     // código de región
+    country: geo.country,
+    region: geo.region,
     city: geo.city,
     timezone,
-    localDateTime,
+    dateTimeISO: isoDateTime
   });
 });
 
-// Página principal con frontend incluido
-app.get("/", (req, res) => {
-  res.send(`<!doctype html>
-<html lang="es">
-<head>
-  <meta charset="utf-8" />
-  <title>Detección de zona horaria (geoip-lite)</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <style>
-    body {
-      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-      margin: 0;
-      padding: 2rem;
-      background: #f5f5f5;
-    }
-    .card {
-      max-width: 480px;
-      margin: 0 auto;
-      background: #fff;
-      border-radius: 12px;
-      padding: 1.5rem;
-      box-shadow: 0 8px 20px rgba(0,0,0,0.06);
-    }
-    h1 {
-      font-size: 1.4rem;
-      margin-top: 0;
-    }
-    button {
-      border: none;
-      padding: 0.5rem 1rem;
-      border-radius: 6px;
-      cursor: pointer;
-      font-size: 0.95rem;
-      margin-right: 0.5rem;
-    }
-    #btn-reintentar {
-      margin-top: 1rem;
-    }
-    .btn-ok {
-      background: #22c55e;
-      color: #fff;
-    }
-    .btn-not {
-      background: #ef4444;
-      color: #fff;
-    }
-    .btn-secondary {
-      background: #e5e7eb;
-    }
-    .row {
-      margin-bottom: 0.5rem;
-    }
-    code {
-      background: #f3f4f6;
-      padding: 0.1rem 0.3rem;
-      border-radius: 4px;
-      font-size: 0.9rem;
-    }
-  </style>
-</head>
-<body>
-  <div class="card">
-    <h1>Detección de ubicación y hora local</h1>
-    <div id="estado" class="row">Cargando...</div>
-    <div id="datos" class="row"></div>
-
-    <div id="acciones" class="row" style="display:none;">
-      <button id="btn-si" class="btn-ok">Sí, está bien</button>
-      <button id="btn-no" class="btn-not">No, cambiar</button>
-    </div>
-
-    <div id="editar" class="row" style="display:none; margin-top:0.5rem;">
-      <label>
-        Zona horaria (IANA):<br/>
-        <input id="input-tz" type="text" style="width:100%; padding:0.4rem; margin-top:0.25rem;" />
-      </label>
-      <button id="btn-guardar" class="btn-secondary" style="margin-top:0.5rem;">Guardar zona horaria</button>
-    </div>
-
-    <button id="btn-reintentar" class="btn-secondary" style="display:none;">Olvidar y detectar de nuevo</button>
-  </div>
-
-  <script>
-    const LS_KEY = "userLocation";
-
-    function formatearHora(timezone) {
-      try {
-        const fmt = new Intl.DateTimeFormat("es-ES", {
-          timeZone: timezone,
-          year: "numeric",
-          month: "2-digit",
-          day: "2-digit",
-          hour: "2-digit",
-          minute: "2-digit",
-          second: "2-digit",
-        });
-        return fmt.format(new Date());
-      } catch (e) {
-        console.error("Error formateando fecha/hora:", e);
-        return "(no se pudo formatear la hora)";
-      }
-    }
-
-    function mostrarDatos(data, confirmado) {
-      const datosEl = document.getElementById("datos");
-      const estadoEl = document.getElementById("estado");
-      const accionesEl = document.getElementById("acciones");
-      const editarEl = document.getElementById("editar");
-      const btnRe = document.getElementById("btn-reintentar");
-
-      const hora = data.timezone ? formatearHora(data.timezone) : "(zona horaria desconocida)";
-
-      datosEl.innerHTML = \`
-        <div><strong>IP:</strong> \${data.ip || "?"}</div>
-        <div><strong>País:</strong> \${data.country || "?"}</div>
-        <div><strong>Región:</strong> \${data.region || "?"}</div>
-        <div><strong>Ciudad:</strong> \${data.city || "?"}</div>
-        <div><strong>Zona horaria:</strong> <code>\${data.timezone || "?"}</code></div>
-        <div><strong>Fecha y hora local:</strong> \${hora}</div>
-      \`;
-
-      if (confirmado) {
-        estadoEl.textContent = "Ubicación confirmada y guardada.";
-        accionesEl.style.display = "none";
-        editarEl.style.display = "none";
-        btnRe.style.display = "inline-block";
-      } else {
-        estadoEl.textContent = "¿Es correcta esta información?";
-        accionesEl.style.display = "block";
-        editarEl.style.display = "none";
-        btnRe.style.display = "inline-block";
-      }
-    }
-
-    async function detectarUbicacion() {
-      const estadoEl = document.getElementById("estado");
-      const accionesEl = document.getElementById("acciones");
-      const editarEl = document.getElementById("editar");
-
-      accionesEl.style.display = "none";
-      editarEl.style.display = "none";
-      estadoEl.textContent = "Detectando ubicación...";
-
-      // 1. Ver si ya tenemos datos en localStorage
-      const saved = localStorage.getItem(LS_KEY);
-      if (saved) {
-        const data = JSON.parse(saved);
-        mostrarDatos(data, true);
-        return;
-      }
-
-      // 2. Si no, llamar al backend
-      try {
-        const res = await fetch("/api/location");
-        if (!res.ok) throw new Error("Respuesta no ok");
-        const data = await res.json();
-        mostrarDatos(data, false);
-
-        const btnSi = document.getElementById("btn-si");
-        const btnNo = document.getElementById("btn-no");
-        const inputTz = document.getElementById("input-tz");
-        const btnGuardar = document.getElementById("btn-guardar");
-
-        btnSi.onclick = () => {
-          localStorage.setItem(LS_KEY, JSON.stringify(data));
-          mostrarDatos(data, true);
-        };
-
-        btnNo.onclick = () => {
-          document.getElementById("editar").style.display = "block";
-          inputTz.value = data.timezone || "";
-        };
-
-        btnGuardar.onclick = () => {
-          const nuevaTz = inputTz.value.trim();
-          if (!nuevaTz) {
-            alert("Ingresa una zona horaria válida (ej: America/Lima)");
-            return;
-          }
-          const nuevo = { ...data, timezone: nuevaTz };
-          localStorage.setItem(LS_KEY, JSON.stringify(nuevo));
-          mostrarDatos(nuevo, true);
-        };
-      } catch (e) {
-        console.error(e);
-        estadoEl.textContent = "No se pudo detectar la ubicación.";
-      }
-    }
-
-    document.getElementById("btn-reintentar").onclick = () => {
-      localStorage.removeItem(LS_KEY);
-      detectarUbicacion();
-    };
-
-    detectarUbicacion();
-  </script>
-</body>
-</html>`);
-});
-
-// Arrancar servidor
+// Iniciar servidor
 app.listen(PORT, () => {
-  console.log("Servidor escuchando en puerto " + PORT);
+  console.log("API corriendo en puerto " + PORT);
 });
