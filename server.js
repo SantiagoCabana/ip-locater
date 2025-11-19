@@ -1,56 +1,62 @@
 // server.js
 const express = require("express");
-const path = require("path");
-
-// Si usas Node 18+ puedes usar fetch global.
-// En Node <18 instala node-fetch: npm install node-fetch
-let fetchFn = global.fetch;
-if (!fetchFn) {
-  fetchFn = (...args) =>
-    import("node-fetch").then(({ default: fetch }) => fetch(...args));
-}
+const geoip = require("geoip-lite");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Middleware básico
 app.use(express.json());
 
-// API: devuelve info de ubicación basada en IP
-app.get("/api/location", async (req, res) => {
+function getLocalDateTimeIn(timezone) {
   try {
-    // IP del cliente (simplificada; detrás de proxy usa x-forwarded-for)
-    const ipHeader = req.headers["x-forwarded-for"];
-    const ip =
-      (ipHeader && ipHeader.split(",")[0].trim()) ||
-      req.socket.remoteAddress ||
-      "";
-
-    // Llamada a ipapi.co con IP
-    // Si ip es privada/extraña, ipapi igualmente suele detectar la IP pública
-    const url =
-      ip && !ip.includes("localhost") && !ip.startsWith("::1")
-        ? `https://ipapi.co/${ip}/json/`
-        : "https://ipapi.co/json/";
-
-    const resp = await fetchFn(url);
-    const data = await resp.json();
-
-    if (data.error) {
-      console.error("Error ipapi:", data);
-      return res.status(500).json({ error: "ipapi_failed" });
-    }
-
-    res.json({
-      ip: data.ip,
-      country: data.country_name,
-      city: data.city,
-      timezone: data.timezone, // ej: America/Lima
+    const formatter = new Intl.DateTimeFormat("es-ES", {
+      timeZone: timezone,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
     });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "location_failed" });
+    return formatter.format(new Date());
+  } catch (e) {
+    console.error("Error formateando fecha/hora:", e);
+    return null;
   }
+}
+
+// API: devuelve info basada en IP usando geoip-lite
+app.get("/api/location", (req, res) => {
+  const ipHeader = req.headers["x-forwarded-for"];
+  let ip =
+    (ipHeader && ipHeader.split(",")[0].trim()) ||
+    req.socket.remoteAddress ||
+    "";
+
+  // En local normalmente es ::1 (IPv6 loopback) y geoip-lite no tiene datos.
+  // Para pruebas, ponemos una IP fija si es ::1 o 127.0.0.1
+  if (ip === "::1" || ip === "127.0.0.1") {
+    ip = "8.8.8.8"; // solo para ver que funciona en desarrollo
+  }
+
+  const geo = geoip.lookup(ip);
+
+  if (!geo) {
+    console.log("Sin datos para IP:", ip);
+    return res.status(500).json({ error: "no_geo_data", ip });
+  }
+
+  const timezone = geo.timezone;
+  const localDateTime = timezone ? getLocalDateTimeIn(timezone) : null;
+
+  res.json({
+    ip,
+    country: geo.country,   // código ISO (ej: "PE")
+    region: geo.region,     // código de región
+    city: geo.city,
+    timezone,
+    localDateTime,
+  });
 });
 
 // Página principal con frontend incluido
@@ -59,7 +65,7 @@ app.get("/", (req, res) => {
 <html lang="es">
 <head>
   <meta charset="utf-8" />
-  <title>Detección de zona horaria</title>
+  <title>Detección de zona horaria (geoip-lite)</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <style>
     body {
@@ -168,6 +174,7 @@ app.get("/", (req, res) => {
       datosEl.innerHTML = \`
         <div><strong>IP:</strong> \${data.ip || "?"}</div>
         <div><strong>País:</strong> \${data.country || "?"}</div>
+        <div><strong>Región:</strong> \${data.region || "?"}</div>
         <div><strong>Ciudad:</strong> \${data.city || "?"}</div>
         <div><strong>Zona horaria:</strong> <code>\${data.timezone || "?"}</code></div>
         <div><strong>Fecha y hora local:</strong> \${hora}</div>
@@ -208,10 +215,8 @@ app.get("/", (req, res) => {
         const res = await fetch("/api/location");
         if (!res.ok) throw new Error("Respuesta no ok");
         const data = await res.json();
-        // Mostrar y pedir confirmación
         mostrarDatos(data, false);
 
-        // Botones de sí / no
         const btnSi = document.getElementById("btn-si");
         const btnNo = document.getElementById("btn-no");
         const inputTz = document.getElementById("input-tz");
@@ -248,7 +253,6 @@ app.get("/", (req, res) => {
       detectarUbicacion();
     };
 
-    // Ejecutar al cargar
     detectarUbicacion();
   </script>
 </body>

@@ -9,9 +9,10 @@
   "keywords": [],
   "author": "",
   "license": "ISC",
-  "description": "",
   "dependencies": {
     "express": "^5.1.0",
+    "geoip-lite": "^1.4.10",
     "node-fetch": "^3.3.2"
-  }
+  },
+  "description": ""
 }
