@@ -5,7 +5,10 @@ const geoip = require("geoip-lite");
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Función: fecha/hora ISO 8601 real según timezone
+// Render / Railway necesitan esto para IP real
+app.set("trust proxy", true);
+
+// Fecha/hora ISO 8601 en la zona horaria detectada
 function getISODateTime(timezone) {
   const now = new Date();
 
@@ -17,7 +20,7 @@ function getISODateTime(timezone) {
     hour: "2-digit",
     minute: "2-digit",
     second: "2-digit",
-    hour12: false,
+    hour12: false
   }).formatToParts(now);
 
   const year = parts.find(p => p.type === "year").value;
@@ -27,24 +30,21 @@ function getISODateTime(timezone) {
   const minute = parts.find(p => p.type === "minute").value;
   const second = parts.find(p => p.type === "second").value;
 
-  const offsetParts = new Intl.DateTimeFormat("en-US", {
+  const offset = new Intl.DateTimeFormat("en-US", {
     timeZone: timezone,
     timeZoneName: "shortOffset",
-  }).formatToParts(now);
-
-  const offset = offsetParts.find(p => p.type === "timeZoneName").value;
+  })
+    .formatToParts(now)
+    .find(p => p.type === "timeZoneName").value;
 
   return `${year}-${month}-${day}T${hour}:${minute}:${second}${offset}`;
 }
 
-// Ruta API única
+// API ÚNICA — super rápida
 app.get("/api/location", (req, res) => {
-  let ip =
-    (req.headers["x-forwarded-for"] &&
-      req.headers["x-forwarded-for"].split(",")[0].trim()) ||
-    req.socket.remoteAddress;
+  let ip = req.ip;
 
-  // En localhost cambiará ::1 por una IP pública de ejemplo para pruebas
+  // En localhost usar una IP pública para pruebas
   if (ip === "::1" || ip === "127.0.0.1") {
     ip = "8.8.8.8";
   }
@@ -52,11 +52,11 @@ app.get("/api/location", (req, res) => {
   const geo = geoip.lookup(ip);
 
   if (!geo) {
-    return res.status(500).json({ error: "no_geo_data", ip });
+    return res.json({ ip, error: "GeoIPNotFound" });
   }
 
   const timezone = geo.timezone;
-  const isoDateTime = timezone ? getISODateTime(timezone) : null;
+  const iso = timezone ? getISODateTime(timezone) : null;
 
   res.json({
     ip,
@@ -64,11 +64,11 @@ app.get("/api/location", (req, res) => {
     region: geo.region,
     city: geo.city,
     timezone,
-    dateTimeISO: isoDateTime
+    dateTimeISO: iso
   });
 });
 
-// Iniciar servidor
+// Start server
 app.listen(PORT, () => {
-  console.log("API corriendo en puerto " + PORT);
+  console.log("API escuchando en puerto " + PORT);
 });
